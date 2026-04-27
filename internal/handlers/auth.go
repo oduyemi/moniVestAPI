@@ -1,26 +1,28 @@
-package controllers
+package handlers
 
 import (
 	"context"
 	"strings"
 	"time"
 
-	"doauth/internal/models"
-	"doauth/internal/repository"
-	"doauth/internal/services"
-	"doauth/pkg/utils"
+	"moniVestAPI/internal/models"
+	"moniVestAPI/internal/repository"
+	"moniVestAPI/internal/services"
+	"moniVestAPI/pkg/utils"
 
 	"github.com/gofiber/fiber/v2"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
 
-// REGISTER 
+// REGISTER
 func Register(c *fiber.Ctx) error {
 	collection := repository.GetUserCollection()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	var body struct {
 		FirstName       string
 		LastName        string
@@ -48,7 +50,7 @@ func Register(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to hash password"})
 	}
 
-	otpStr, _ := services.GenerateOTP()
+	otp, _ := services.GenerateOTP()
 	expiry := time.Now().Add(5 * time.Minute)
 	user := models.User{
 		FirstName:    strings.TrimSpace(body.FirstName),
@@ -56,11 +58,12 @@ func Register(c *fiber.Ctx) error {
 		Email:        email,
 		Password:     hashed,
 		IsVerified:   false,
-		OTP:          &otpStr,
+		OTP:          &otp,
 		OTPExpiresAt: &expiry,
 	}
 
 	user.SetDefaults()
+
 	_, err = collection.InsertOne(ctx, user)
 	if err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -69,16 +72,17 @@ func Register(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "User creation failed"})
 	}
 
-	go services.SendOTPEmail(email, otpStr)
+	go services.SendOTPEmail(email, otp)
 	return c.JSON(fiber.Map{"message": "OTP sent"})
 }
 
 
-// VERIFY OTP 
+// VERIFY OTP
 func VerifyOTP(c *fiber.Ctx) error {
 	collection := repository.GetUserCollection()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	var body struct {
 		Email string
 		OTP   string
@@ -126,6 +130,7 @@ func VerifyOTP(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Verification failed"})
 	}
 
+	go services.CreateDefaultWallets(user.ID)
 	return c.JSON(fiber.Map{"message": "Account verified"})
 }
 
@@ -133,6 +138,8 @@ func VerifyOTP(c *fiber.Ctx) error {
 // LOGIN
 func Login(c *fiber.Ctx) error {
 	collection := repository.GetUserCollection()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	var body struct {
 		Email    string
@@ -144,9 +151,8 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	email := strings.ToLower(strings.TrimSpace(body.Email))
-
 	var user models.User
-	err := collection.FindOne(context.Background(), bson.M{"email": email}).Decode(&user)
+	err := collection.FindOne(ctx, bson.M{"email": email}).Decode(&user)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "User not found"})
 	}
@@ -161,13 +167,14 @@ func Login(c *fiber.Ctx) error {
 
 	accessToken, _ := services.GenerateAccessToken(user.ID.Hex())
 	refreshToken, _ := services.GenerateRefreshToken(user.ID.Hex())
-
-	collection.UpdateOne(context.Background(),
+	rt := refreshToken
+	now := time.Now()
+	_, _ = collection.UpdateOne(ctx,
 		bson.M{"_id": user.ID},
 		bson.M{
 			"$set": bson.M{
-				"last_login":    time.Now(),
-				"refresh_token": refreshToken,
+				"last_login":    now,
+				"refresh_token": &rt,
 			},
 		},
 	)
@@ -178,10 +185,11 @@ func Login(c *fiber.Ctx) error {
 	})
 }
 
-
-//  REFRESH TOKEN 
+// REFRESH TOKEN
 func RefreshToken(c *fiber.Ctx) error {
 	collection := repository.GetUserCollection()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	var body struct {
 		RefreshToken string
@@ -196,22 +204,28 @@ func RefreshToken(c *fiber.Ctx) error {
 		return c.Status(401).JSON(fiber.Map{"error": "Invalid refresh token"})
 	}
 
-	userID := claims["user_id"].(string)
+	userID, ok := claims["user_id"].(string)
+	if !ok {
+		return c.Status(401).JSON(fiber.Map{"error": "Invalid token payload"})
+	}
+
 	objID, _ := primitive.ObjectIDFromHex(userID)
 	var user models.User
-	err = collection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&user)
-	if err != nil || user.RefreshToken != body.RefreshToken {
+	err = collection.FindOne(ctx, bson.M{"_id": objID}).Decode(&user)
+	if err != nil || user.RefreshToken == nil || *user.RefreshToken != body.RefreshToken {
 		return c.Status(401).JSON(fiber.Map{"error": "Invalid session"})
 	}
 
 	newAccess, _ := services.GenerateAccessToken(userID)
-
 	return c.JSON(fiber.Map{"access_token": newAccess})
 }
+
 
 // RESEND OTP
 func ResendOTP(c *fiber.Ctx) error {
 	collection := repository.GetUserCollection()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	var body struct {
 		Email string
@@ -223,7 +237,7 @@ func ResendOTP(c *fiber.Ctx) error {
 
 	email := strings.ToLower(strings.TrimSpace(body.Email))
 	var user models.User
-	err := collection.FindOne(context.Background(), bson.M{"email": email}).Decode(&user)
+	err := collection.FindOne(ctx, bson.M{"email": email}).Decode(&user)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "User not found"})
 	}
@@ -232,7 +246,8 @@ func ResendOTP(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "User already verified"})
 	}
 
-	if time.Now().Before(user.OTPExpiresAt.Add(-4 * time.Minute)) {
+	if user.OTPExpiresAt != nil &&
+		time.Now().Before(user.OTPExpiresAt.Add(-4*time.Minute)) {
 		return c.Status(429).JSON(fiber.Map{"error": "Wait before requesting new OTP"})
 	}
 
@@ -241,12 +256,13 @@ func ResendOTP(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to generate OTP"})
 	}
 
-	_, err = collection.UpdateOne(context.Background(),
+	expiry := time.Now().Add(5 * time.Minute)
+	_, err = collection.UpdateOne(ctx,
 		bson.M{"_id": user.ID},
 		bson.M{
 			"$set": bson.M{
-				"otp":            otp,
-				"otp_expires_at": time.Now().Add(5 * time.Minute),
+				"otp":            &otp,
+				"otp_expires_at": &expiry,
 			},
 		},
 	)
@@ -261,14 +277,15 @@ func ResendOTP(c *fiber.Ctx) error {
 }
 
 
-// LOGOUT 
+// LOGOUT
 func Logout(c *fiber.Ctx) error {
 	collection := repository.GetUserCollection()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	userID := c.Locals("user_id").(string)
 	objID, _ := primitive.ObjectIDFromHex(userID)
-
-	collection.UpdateOne(context.Background(),
+	_, _ = collection.UpdateOne(ctx,
 		bson.M{"_id": objID},
 		bson.M{"$unset": bson.M{"refresh_token": ""}},
 	)

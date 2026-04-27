@@ -36,7 +36,6 @@ type User struct {
 	OTP          *string            `bson:"otp,omitempty" json:"-"`
 	OTPExpiresAt *time.Time         `bson:"otp_expires_at,omitempty" json:"-"`
 	RefreshToken *string            `bson:"refresh_token,omitempty" json:"-"`
-
 	CreatedAt time.Time  `bson:"created_at" json:"createdAt"`
 	UpdatedAt *time.Time `bson:"updated_at,omitempty" json:"updatedAt,omitempty"`
 	LastLogin *time.Time `bson:"last_login,omitempty" json:"lastLogin,omitempty"`
@@ -89,6 +88,15 @@ func CreateUserIndexes(collection *mongo.Collection) error {
 		},
 	}
 
-	_, err := collection.Indexes().CreateMany(ctx, indexes)
-	return err
+	expiry := time.Now().Add(5 * time.Minute)
+
+	_, err = collection.UpdateOne(context.Background(),
+		bson.M{"_id": user.ID},
+		bson.M{
+			"$set": bson.M{
+				"otp":            &otp,
+				"otp_expires_at": &expiry,
+			},
+		},
+	)
 }

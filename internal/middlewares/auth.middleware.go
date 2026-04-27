@@ -1,9 +1,9 @@
-package middleware
+package middlewares
 
 import (
 	"strings"
 
-	"doauth/internal/services"
+	"moniVestAPI/internal/services"
 	"github.com/gofiber/fiber/v2"
 )
 
