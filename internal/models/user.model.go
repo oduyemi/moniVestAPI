@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -14,40 +15,54 @@ type UserRole string
 type UserStatus string
 
 const (
-	RoleUser  UserRole = "user"
-	RoleAdmin UserRole = "admin"
+	UserRoleUser  UserRole = "user"
+	UserRoleAdmin UserRole = "admin"
 
-	StatusActive    UserStatus = "active"
-	StatusSuspended UserStatus = "suspended"
-	StatusClosed    UserStatus = "closed"
+	UserStatusActive    UserStatus = "active"
+	UserStatusSuspended UserStatus = "suspended"
+	UserStatusClosed    UserStatus = "closed"
 )
 
 type User struct {
-	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	FirstName      string             `bson:"first_name" json:"firstName"`
-	LastName       string             `bson:"last_name" json:"lastName"`
-	Email          string             `bson:"email" json:"email"`
-	Phone          string             `bson:"phone" json:"phone"`
-	Role           UserRole           `bson:"role" json:"role"` // default: user
-	Password       string             `bson:"password" json:"-"`
-	IsVerified     bool               `bson:"is_verified" json:"isVerified"`
-	Status         UserStatus         `bson:"status" json:"status"`
-	OTP            string             `bson:"otp,omitempty" json:"-"`
-	OTPExpiresAt   time.Time          `bson:"otp_expires_at,omitempty" json:"-"`
-	RefreshToken   string             `bson:"refresh_token,omitempty" json:"-"`
-	CreatedAt      time.Time          `bson:"created_at" json:"createdAt"`
-	UpdatedAt      time.Time          `bson:"updated_at,omitempty" json:"updatedAt,omitempty"`
-	LastLogin      time.Time          `bson:"last_login,omitempty" json:"lastLogin,omitempty"`
+	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	FirstName    string             `bson:"first_name" json:"firstName"`
+	LastName     string             `bson:"last_name" json:"lastName"`
+	Email        string             `bson:"email" json:"email"`
+	Phone        string             `bson:"phone" json:"phone"`
+	Role         UserRole           `bson:"role" json:"role"`
+	Password     string             `bson:"password" json:"-"`
+	IsVerified   bool               `bson:"is_verified" json:"isVerified"`
+	Status       UserStatus         `bson:"status" json:"status"`
+	OTP          *string            `bson:"otp,omitempty" json:"-"`
+	OTPExpiresAt *time.Time         `bson:"otp_expires_at,omitempty" json:"-"`
+	RefreshToken *string            `bson:"refresh_token,omitempty" json:"-"`
+
+	CreatedAt time.Time  `bson:"created_at" json:"createdAt"`
+	UpdatedAt *time.Time `bson:"updated_at,omitempty" json:"updatedAt,omitempty"`
+	LastLogin *time.Time `bson:"last_login,omitempty" json:"lastLogin,omitempty"`
 }
 
 func (u *User) SetDefaults() {
+	now := time.Now()
+
+	u.Email = strings.ToLower(strings.TrimSpace(u.Email))
+
 	if u.Role == "" {
-		u.Role = RoleUser
+		u.Role = UserRoleUser
 	}
+
 	if u.Status == "" {
-		u.Status = StatusActive
+		u.Status = UserStatusActive
 	}
-	u.CreatedAt = time.Now()
+
+	if u.CreatedAt.IsZero() {
+		u.CreatedAt = now
+	}
+}
+
+func (u *User) Touch() {
+	now := time.Now()
+	u.UpdatedAt = &now
 }
 
 func CreateUserIndexes(collection *mongo.Collection) error {
@@ -56,8 +71,13 @@ func CreateUserIndexes(collection *mongo.Collection) error {
 
 	indexes := []mongo.IndexModel{
 		{
-			Keys:    bson.M{"email": 1},
-			Options: options.Index().SetUnique(true),
+			Keys: bson.M{"email": 1},
+			Options: options.Index().
+				SetUnique(true).
+				SetCollation(&options.Collation{
+					Locale:   "en",
+					Strength: 2, 
+				}),
 		},
 		{
 			Keys: bson.M{"created_at": 1},

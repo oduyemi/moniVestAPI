@@ -57,7 +57,7 @@ func CreateWalletIndexes(collection *mongo.Collection) error {
 			  "wallet_type": 1,
 			},
 			Options: options.Index().SetUnique(true),
-		  }
+		  },
 	}
 
 	_, err := collection.Indexes().CreateMany(ctx, indexes)
